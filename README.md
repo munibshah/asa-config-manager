@@ -87,9 +87,9 @@ print(preview)
 # Apply changes (creates backup automatically)
 result = manager.commit_changes()
 
-# Revert if needed
+# Revert using the new state-based method
 if something_wrong:
-    manager.revert_changes()
+    result = manager.revert_last_changes()
 
 # Disconnect
 manager.disconnect()
@@ -104,6 +104,37 @@ with ASAManager(device_config='configs/device.yaml') as manager:
     print(manager.preview_changes())
     result = manager.commit_changes(save_config=True)
 ```
+
+### Enhanced Revert Functionality
+
+The ASA Configuration Manager now includes powerful revert capabilities:
+
+#### CLI Revert Command
+```bash
+# Apply changes and automatically save state for revert
+python -m asa_manager --commit
+
+# Revert the last applied changes (works across sessions)
+python -m asa_manager --revert
+
+# Check if changes are available to revert
+python -m asa_manager --revert  # Shows warning if none available
+```
+
+#### Revert Features
+- **Cross-session persistence**: Changes can be reverted even after closing the CLI
+- **State tracking**: Automatically saves applied changes with reverse commands
+- **Device validation**: Prevents reverting changes made to different devices
+- **Backup integration**: Shows original backup file location
+- **Automatic cleanup**: Clears revert state after successful rollback
+
+#### Visual Console Interface
+The CLI now features enhanced visual feedback:
+- **Color-coded output** with success ✓, error ✗, and warning ⚠ indicators
+- **Progress animations** with spinner effects during operations
+- **Formatted headers** for clear operation identification
+- **Change previews** showing before/after values with arrows
+- **Backup information** with file icons and paths
 
 ## Project Structure
 
@@ -128,13 +159,13 @@ with ASAManager(device_config='configs/device.yaml') as manager:
 
 - ✅ Preview changes before applying
 - ✅ Automatic configuration backups
-- ✅ Revert capability with reverse commands
+- ✅ **Enhanced CLI revert with cross-session persistence**
+- ✅ **State-based rollback with device validation**
+- ✅ **Visual progress indicators and status feedback**
 - ✅ Input validation for all parameters
 - ✅ Comprehensive logging
 
 ## Requirements
-
-- Python 3.8+
 - Network access to Cisco ASA device
 - SSH enabled on ASA
 - Valid credentials with appropriate privileges
