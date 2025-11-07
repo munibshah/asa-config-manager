@@ -13,7 +13,10 @@ safe preview-commit-revert workflow.
 - Modify interface nameif values
 - Preview changes before applying
 - Automatic configuration backups
+- **Enhanced CLI revert functionality with state persistence**
+- **Beautiful console interface with progress indicators**
 - Rollback capability with reverse commands
+- Cross-session change tracking
 
 ## Installation
 
@@ -57,6 +60,12 @@ python -m asa_manager --commit
 
 # Apply and save configuration
 python -m asa_manager --commit --save
+
+# Revert the last applied changes
+python -m asa_manager --revert
+
+# List available backups
+python -m asa_manager --list-backups
 ```
 
 ### Library Mode

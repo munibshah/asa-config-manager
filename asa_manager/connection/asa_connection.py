@@ -3,6 +3,7 @@
 from typing import Optional, List
 from netmiko import ConnectHandler
 from netmiko.exceptions import NetmikoTimeoutException, NetmikoAuthenticationException
+import paramiko
 
 from ..config.device_config import DeviceConfig
 from ..utils.logger import get_logger
@@ -24,7 +25,39 @@ class ASAConnection:
         self.device_config = device_config
         self.connection: Optional[ConnectHandler] = None
         self.is_connected = False
+        
+        # Configure paramiko to support legacy SSH algorithms for older ASA devices
+        self._configure_legacy_ssh_support()
     
+    def _configure_legacy_ssh_support(self):
+        """Configure paramiko to support legacy SSH algorithms for older ASA devices."""
+        try:
+            # Add legacy algorithms to the supported lists (convert to lists first)
+            paramiko.Transport._preferred_kex = list(paramiko.Transport._preferred_kex) + [
+                'diffie-hellman-group1-sha1',
+                'diffie-hellman-group14-sha1', 
+                'diffie-hellman-group-exchange-sha1',
+                'diffie-hellman-group-exchange-sha256',
+            ]
+            
+            paramiko.Transport._preferred_ciphers = list(paramiko.Transport._preferred_ciphers) + [
+                'aes128-cbc',
+                'aes192-cbc', 
+                'aes256-cbc',
+                'des3-cbc',
+            ]
+            
+            paramiko.Transport._preferred_macs = list(paramiko.Transport._preferred_macs) + [
+                'hmac-sha1',
+                'hmac-sha1-96',
+                'hmac-md5',
+                'hmac-md5-96',
+            ]
+            
+            logger.debug("Legacy SSH algorithms configured for older ASA devices")
+        except Exception as e:
+            logger.warning(f"Could not configure legacy SSH support: {e}")
+
     def connect(self) -> bool:
         """
         Establish SSH connection to ASA device.

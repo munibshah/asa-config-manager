@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from .manager import ASAManager
-from .utils import get_logger
+from .utils import get_logger, CLIFormatter, format_commit_operation, format_revert_operation, show_operation_result
 
 logger = get_logger(__name__)
 
@@ -30,6 +30,9 @@ Examples:
 
   # Apply and save configuration
   python -m asa_manager -d configs/device.yaml -c configs/changes.yaml --commit --save
+
+  # Revert last applied changes
+  python -m asa_manager --revert
 
   # List backups
   python -m asa_manager --list-backups
@@ -79,6 +82,12 @@ Examples:
     )
     
     parser.add_argument(
+        '--revert',
+        action='store_true',
+        help='Revert the last applied changes'
+    )
+    
+    parser.add_argument(
         '--backup-dir',
         default='backups',
         help='Directory for backups (default: backups)'
@@ -93,8 +102,8 @@ Examples:
     args = parser.parse_args()
     
     # Validate arguments
-    if not (args.preview or args.commit or args.list_backups):
-        parser.error("Must specify --preview, --commit, or --list-backups")
+    if not (args.preview or args.commit or args.list_backups or args.revert):
+        parser.error("Must specify --preview, --commit, --list-backups, or --revert")
     
     try:
         # Initialize manager
@@ -117,6 +126,55 @@ Examples:
                 print("  No backups found")
             return 0
         
+        # Handle revert command
+        if args.revert:
+            # Check if there are revertible changes before connecting
+            if not manager.has_revertible_changes():
+                CLIFormatter.warning("No changes to revert. No changes have been applied recently.")
+                return 0
+            
+            # Load device config if not already loaded
+            if not manager.device_config:
+                if not Path(args.device_config).exists():
+                    CLIFormatter.error(f"Device config file not found: {args.device_config}")
+                    print("Please create it from the example:")
+                    print(f"  cp configs/device_example.yaml {args.device_config}")
+                    return 1
+                manager.load_device_config(args.device_config)
+            
+            # Connect to device with progress
+            CLIFormatter.progress_start(f"Connecting to {manager.device_config.host}")
+            if not manager.connect():
+                print()
+                CLIFormatter.error("Failed to connect to device")
+                return 1
+            CLIFormatter.progress_done()
+            
+            try:
+                # Show enhanced revert display
+                state = manager.state_manager.load_last_applied_changes()
+                format_revert_operation(state)
+                
+                CLIFormatter.progress_start("Reverting configuration changes")
+                CLIFormatter.spinner(0.5)
+                result = manager.revert_last_changes()
+                CLIFormatter.progress_done()
+                
+                show_operation_result(result['success'], 
+                                    "Changes reverted successfully!" if result['success'] else f"Failed to revert changes: {result.get('message')}", 
+                                    result.get('results'))
+                
+                if result['success']:
+                    CLIFormatter.info(f"Reverted changes originally applied at: {result.get('reverted_at')}")
+                    if result.get('backup_available'):
+                        CLIFormatter.info(f"Original backup available at: {result.get('backup_available')}")
+                    return 0
+                else:
+                    return 1
+            
+            finally:
+                manager.disconnect()
+
         # Load device config if not already loaded
         if not manager.device_config:
             if not Path(args.device_config).exists():
@@ -126,8 +184,8 @@ Examples:
                 return 1
             manager.load_device_config(args.device_config)
         
-        # Verify changes config exists
-        if not Path(args.changes_config).exists():
+        # Verify changes config exists (only for preview/commit operations)
+        if not args.revert and not Path(args.changes_config).exists():
             print(f"Error: Changes config file not found: {args.changes_config}")
             print("Please create it from the example:")
             print(f"  cp configs/changes_example.yaml {args.changes_config}")
@@ -150,26 +208,33 @@ Examples:
             
             # Commit changes
             if args.commit:
-                print("\n" + "=" * 70)
-                print("APPLYING CHANGES")
-                print("=" * 70)
+                # Show enhanced commit display
+                format_commit_operation(manager.interface_manager.staged_changes)
+                
+                CLIFormatter.progress_start("Creating configuration backup")
+                CLIFormatter.spinner(0.3)
                 
                 result = manager.commit_changes(
                     save_config=args.save,
                     create_backup=not args.no_backup
                 )
                 
+                CLIFormatter.progress_done()
+                CLIFormatter.progress_start("Applying configuration changes")
+                CLIFormatter.spinner(0.5)
+                CLIFormatter.progress_done()
+                
+                show_operation_result(result['success'], 
+                                    "Changes applied successfully!" if result['success'] else f"Failed to apply changes: {result.get('message')}", 
+                                    result.get('results'))
+                
                 if result['success']:
-                    print("✓ Changes applied successfully!")
                     if result.get('config_saved'):
-                        print("✓ Configuration saved to startup-config")
+                        CLIFormatter.success("Configuration saved to startup-config")
                     elif args.save:
-                        print("✗ Warning: Failed to save configuration")
+                        CLIFormatter.warning("Failed to save configuration")
+                    return 0
                 else:
-                    print(f"✗ Failed to apply changes: {result.get('message')}")
-                    for item in result.get('results', []):
-                        if not item['success']:
-                            print(f"  - {item['interface']}: {item.get('error')}")
                     return 1
         
         finally:

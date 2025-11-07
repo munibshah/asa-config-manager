@@ -6,7 +6,7 @@ from pathlib import Path
 from .config import DeviceConfig, ChangeConfig
 from .connection import ASAConnection
 from .operations import InterfaceManager
-from .utils import setup_logger, BackupManager, get_logger
+from .utils import setup_logger, BackupManager, StateManager, get_logger
 
 logger = get_logger(__name__)
 
@@ -21,7 +21,8 @@ class ASAManager:
     
     def __init__(self, device_config: Optional[str] = None, 
                  backup_dir: str = "backups",
-                 log_dir: str = "logs"):
+                 log_dir: str = "logs",
+                 state_dir: str = "state"):
         """
         Initialize ASA Manager.
         
@@ -29,6 +30,7 @@ class ASAManager:
             device_config: Path to device configuration YAML file
             backup_dir: Directory for configuration backups
             log_dir: Directory for log files
+            state_dir: Directory for state persistence
         """
         # Setup logging
         setup_logger('asa_manager', log_dir=log_dir)
@@ -38,6 +40,7 @@ class ASAManager:
         self.connection: Optional[ASAConnection] = None
         self.interface_manager: Optional[InterfaceManager] = None
         self.backup_manager = BackupManager(backup_dir)
+        self.state_manager = StateManager(state_dir)
         self.change_config: Optional[ChangeConfig] = None
         
         # Load device config if provided
@@ -142,6 +145,8 @@ class ASAManager:
         if not self.interface_manager.staged_changes:
             raise ValueError("No changes staged. Call load_changes() first.")
         
+        backup_path = None
+        
         # Create backup if requested
         if create_backup and self.connection:
             try:
@@ -162,6 +167,18 @@ class ASAManager:
         # Apply changes
         result = self.interface_manager.commit_changes()
         
+        # Save state for revert capability if changes were successful
+        if result['success']:
+            try:
+                self.state_manager.save_applied_changes(
+                    self.device_config.device_name,
+                    self.interface_manager.staged_changes,
+                    backup_path
+                )
+                logger.info("Saved applied changes state for revert capability")
+            except Exception as e:
+                logger.warning(f"Failed to save state for revert: {e}")
+        
         # Save config if requested and changes were successful
         if save_config and result['success'] and self.connection:
             try:
@@ -174,9 +191,9 @@ class ASAManager:
         
         return result
     
-    def revert_changes(self) -> dict:
+    def revert_last_changes(self) -> dict:
         """
-        Revert previously applied changes.
+        Revert the last applied changes using saved state.
         
         Returns:
             Result dictionary with success status
@@ -184,13 +201,75 @@ class ASAManager:
         Raises:
             ValueError: If not connected or no changes to revert
         """
-        if not self.interface_manager:
+        if not self.connection:
             raise ValueError("Not connected to device. Call connect() first.")
         
-        if not self.interface_manager.staged_changes:
-            raise ValueError("No changes to revert.")
+        # Load last applied changes from state
+        state = self.state_manager.load_last_applied_changes()
+        if not state:
+            return {
+                'success': False,
+                'message': 'No revertible changes found. No changes have been applied recently.'
+            }
         
-        return self.interface_manager.revert_changes()
+        # Verify we're connected to the same device
+        if state.get('device_name') != self.device_config.device_name:
+            return {
+                'success': False,
+                'message': f"Cannot revert: changes were applied to {state.get('device_name')}, but currently connected to {self.device_config.device_name}"
+            }
+        
+        logger.info("Reverting last applied changes...")
+        
+        results = []
+        all_success = True
+        
+        # Apply reverse commands in reverse order
+        for change in reversed(state['applied_changes']):
+            interface = change['interface']
+            reverse_commands = change['reverse_commands']
+            
+            try:
+                logger.info(f"Reverting changes to {interface}...")
+                output = self.connection.send_config_commands(reverse_commands)
+                
+                results.append({
+                    'interface': interface,
+                    'success': True,
+                    'output': output
+                })
+                logger.info(f"Successfully reverted changes to {interface}")
+                
+            except Exception as e:
+                all_success = False
+                results.append({
+                    'interface': interface,
+                    'success': False,
+                    'error': str(e)
+                })
+                logger.error(f"Failed to revert changes to {interface}: {e}")
+        
+        # Clear state if revert was successful
+        if all_success:
+            self.state_manager.clear_state()
+            logger.info("Cleared revert state after successful revert")
+        
+        return {
+            'success': all_success,
+            'results': results,
+            'message': 'All changes reverted' if all_success else 'Some reverts failed',
+            'reverted_at': state.get('timestamp'),
+            'backup_available': state.get('backup_path')
+        }
+    
+    def has_revertible_changes(self) -> bool:
+        """
+        Check if there are changes that can be reverted.
+        
+        Returns:
+            True if there are revertible changes
+        """
+        return self.state_manager.has_revertible_changes()
     
     def get_interface_config(self, interface: str) -> str:
         """
