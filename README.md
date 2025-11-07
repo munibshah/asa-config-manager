@@ -13,8 +13,7 @@ safe preview-commit-revert workflow.
 - Modify interface nameif values
 - Preview changes before applying
 - Automatic configuration backups
-- **Enhanced CLI revert functionality with state persistence**
-- **Beautiful console interface with progress indicators**
+- Enhanced CLI revert functionality with state persistence
 - Rollback capability with reverse commands
 - Cross-session change tracking
 
