@@ -1,93 +1,36 @@
 # TODO: Repository Reorganization
 
-## Problem
-The repository has a messy structure with:
-- **Root-level duplicate files**: `__init__.py`, `__main__.py`, `manager.py`, `asa_connection.py`, `change_config.py`, `device_config.py`, `loader.py` — all are STALE copies of newer code inside `asa_manager/`
-- **Root-level duplicate directories**: `config/`, `connection/`, `operations/`, `utils/`, `validators/` — all are STALE copies of `asa_manager/` subdirectories (missing `console.py`, `state.py`, updated code)
-- **Loose config examples**: `changes_example.yaml`, `device_example.yaml` at root (already in `configs/`)
-- **Loose test/debug scripts**: `test_credentials.py`, `test_ssh.py` at root (should be in `tests/`)
-- **`setup.py` references `src/`** directory which doesn't exist — package is at `asa_manager/` not `src/asa_manager/`
-- **`.gitignore` missing**: `.github/` and `copilot-docs/` exclusions
-- **`example.py`** at root — should be in `examples/`
-- **Root `.gitkeep`** — unnecessary at root level
-- **`PROJECT_REVIEW.md`** — move to `docs/`
-
 ## Plan
+The repository root was cluttered with stale duplicate files/directories that already exist inside `asa_manager/`. Clean up, fix broken references, and ensure internal docs aren't pushed to GitHub.
 
-### Phase 1: Update .gitignore
-- [x] Add `.github/` and `copilot-docs/` to `.gitignore` so they are NOT pushed to GitHub
+## Checklist
+- [x] Remove root-level duplicate Python files (7 files)
+- [x] Remove root-level duplicate directories (5 dirs: config/, connection/, operations/, utils/, validators/)
+- [x] Remove root-level duplicate config examples (changes_example.yaml, device_example.yaml)
+- [x] Move example.py → examples/
+- [x] Move PROJECT_REVIEW.md → docs/
+- [x] Move test_credentials.py, test_ssh.py → tests/
+- [x] Fix setup.py (remove non-existent src/ reference)
+- [x] Fix asa_manager/config/__init__.py (export InterfaceChange)
+- [x] Fix tests/test_asa_manager.py (remove stale sys.path for src/)
+- [x] Add .github/ and copilot-docs/ to .gitignore
+- [x] Untrack .github/ and copilot-docs/ from git index
+- [x] Clean all __pycache__ directories
+- [x] Update README project structure
+- [x] Update CHANGE.md
+- [x] Run tests — 17/17 passed
+- [x] Test CLI --help — works
+- [x] Test CLI --preview — 2/2 devices succeeded
+- [x] Verify .github/ and copilot-docs/ gitignored — confirmed
+- [x] Commit
+- [x] Push to GitHub
 
-### Phase 2: Remove root-level stale duplicate files
-- [x] Remove `__init__.py` (root) — stale copy of `asa_manager/__init__.py`
-- [x] Remove `__main__.py` (root) — stale copy of `asa_manager/__main__.py`
-- [x] Remove `manager.py` (root) — stale copy of `asa_manager/manager.py`
-- [x] Remove `asa_connection.py` (root) — stale copy of `asa_manager/connection/asa_connection.py`
-- [x] Remove `change_config.py` (root) — stale copy of `asa_manager/config/change_config.py`
-- [x] Remove `device_config.py` (root) — stale copy of `asa_manager/config/device_config.py`
-- [x] Remove `loader.py` (root) — stale copy of `asa_manager/config/loader.py`
+## Review
+- 37 files changed, 2,033 lines of stale code removed
+- All 17 unit tests pass
+- CLI preview connects to both ASA devices in parallel successfully
+- `.github/` and `copilot-docs/` confirmed excluded from GitHub via git check-ignore
+- setup.py correctly finds packages at root level
+- Repository structure is now clean and well-organized
 
-### Phase 3: Remove root-level stale duplicate directories
-- [x] Remove `config/` (root) — stale copy of `asa_manager/config/`
-- [x] Remove `connection/` (root) — stale copy of `asa_manager/connection/`
-- [x] Remove `operations/` (root) — stale copy of `asa_manager/operations/`
-- [x] Remove `utils/` (root) — stale copy of `asa_manager/utils/`
-- [x] Remove `validators/` (root) — stale copy of `asa_manager/validators/`
-
-### Phase 4: Move loose files to proper locations
-- [x] Move `changes_example.yaml` (root) — already in `configs/`, remove root copy
-- [x] Move `device_example.yaml` (root) — already in `configs/`, remove root copy
-- [x] Move `test_credentials.py` → `tests/test_credentials.py`
-- [x] Move `test_ssh.py` → `tests/test_ssh.py`
-- [x] Move `example.py` → `examples/example.py`
-- [x] Move `PROJECT_REVIEW.md` → `docs/PROJECT_REVIEW.md`
-- [x] Remove root `.gitkeep` (unnecessary at root)
-
-### Phase 5: Fix setup.py
-- [x] Change `package_dir={"": "src"}` → `package_dir={"": "."}` (package is at `asa_manager/`, not `src/asa_manager/`)
-- [x] Change `packages=find_packages(where="src")` → `packages=find_packages(where=".")`
-
-### Phase 6: Clean up __pycache__
-- [x] Remove all `__pycache__` directories
-
-### Phase 7: Verification
-- [x] Run `python -m asa_manager --help` to verify CLI still works
-- [x] Run tests if available
-- [x] Verify `.github/` and `copilot-docs/` are gitignored
-
-### Phase 8: Commit & Document
-- [x] Update `CHANGE.md`
-- [x] Git commit with descriptive message
-- [x] Verify commit
-
-## Expected Final Structure
-```
-asa-config-manager/
-├── .env.example
-├── .gitignore
-├── CHANGE.md
-├── CHANGELOG.md
-├── CONTRIBUTING.md
-├── LICENSE
-├── QUICKSTART.md
-├── README.md
-├── requirements.txt
-├── setup.py
-├── asa_manager/           # Main package (THE source of truth)
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── manager.py
-│   ├── config/
-│   ├── connection/
-│   ├── operations/
-│   ├── utils/
-│   └── validators/
-├── configs/               # YAML config files + examples
-├── backups/               # Config backups
-├── logs/                  # App logs
-├── state/                 # Revert state persistence
-├── tests/                 # All tests
-├── examples/              # Example scripts
-├── docs/                  # Additional docs
-├── tasks/                 # Task tracking
-├── .github/               # (gitignored — not pushed)
-└── copilot-docs/          # (gitignored — not pushed)
+---
