@@ -241,3 +241,140 @@ Changes to Revert
 ✅ **State management system implemented**  
 ✅ **Enhanced visual console interface complete**  
 ✅ ASA Configuration Manager feature-complete with professional UI
+
+## 2026-03-13 - Fix: Enable Password Not Being Sent During SSH Connection
+
+### Issue
+- **Problem**: When running `python -m asa_manager --preview`, the tool failed to enter enable mode on the ASA because no `secret` (enable password) was configured in `configs/device.yaml`.
+- **Root Cause**: The `DeviceConfig.load_from_dict()` method left `secret` as `None` when it was not explicitly set in the YAML config. This meant `to_netmiko_dict()` never included `secret`, so Netmiko could not send the enable password. The `ASAConnection.connect()` method also skipped the `enable()` call when `secret` was `None`.
+- **Impact**: Connection would either fail or remain stuck at user EXEC mode without entering privileged EXEC mode.
+
+### Fix Applied
+- **File**: `asa_manager/config/device_config.py`
+- **Change**: In `load_from_dict()`, changed `self.secret = config.get('secret')` to `self.secret = config.get('secret', self.password)` so the enable secret automatically defaults to the SSH password when not explicitly provided.
+- **Result**: Netmiko now always receives the `secret` parameter and `ASAConnection.connect()` successfully calls `enable()` to enter privileged EXEC mode.
+
+### Testing
+✅ No code errors after edit  
+✅ Enable password now defaults to SSH password when not specified in config  
+✅ Existing configs with an explicit `secret` field are unaffected  
+
+## 2026-03-13 - Feature: Multi-Device Parallel Execution
+
+### Problem
+- `configs/device.yaml` had two devices defined with **duplicate YAML keys** at the same level
+- `yaml.safe_load()` silently overwrote the first device with the second — only `192.168.1.186` was ever processed
+- No support for running operations across multiple devices
+
+### Changes Made
+
+#### 1. Restructured `configs/device.yaml`
+- Replaced flat duplicate-key format with a proper `devices:` list
+- Both `lab-asav-1` (192.168.1.185) and `lab-asav-2` (192.168.1.186) now parsed correctly
+
+#### 2. Added `DeviceConfig.from_yaml_multi()` (`asa_manager/config/device_config.py`)
+- New class method that returns a `List[DeviceConfig]` from a YAML file
+- Supports both multi-device format (`devices:` list) and legacy flat format (backward compatible)
+- `from_yaml()` updated to delegate to `from_yaml_multi()` and return the first device
+
+#### 3. Updated `ASAManager` (`asa_manager/manager.py`)
+- Added `device_configs: List[DeviceConfig]` attribute alongside existing `device_config`
+- `load_device_config()` now populates both fields
+
+#### 4. Parallel Execution in CLI (`asa_manager/__main__.py`)
+- Extracted `_run_preview_on_device()` and `_run_commit_on_device()` — thread-safe helpers that each create their own `ASAManager` instance with an independent SSH connection
+- Uses `concurrent.futures.ThreadPoolExecutor` (stdlib — no new dependencies)
+- `max_workers` = number of devices (bounded, not unbounded)
+- **Single device** → direct call, no thread pool overhead
+- **Multiple devices** → parallel execution via thread pool
+- Each thread captures stdout into `io.StringIO` via `redirect_stdout` to prevent interleaved output
+- Results sorted by device name and printed sequentially with per-device headers
+- Summary line shows `succeeded/total` count
+
+### Architecture
+- **Thread safety**: Each thread gets its own `ASAManager` → own `ASAConnection` → own Netmiko `ConnectHandler`. Zero shared mutable state.
+- **Error isolation**: If one device fails (timeout, auth error), others continue. Per-device error messages are clear.
+- **No new dependencies**: Uses only `concurrent.futures` and `contextlib.redirect_stdout` from stdlib.
+
+### Test Results
+```
+ℹ Found 2 device(s) in configuration
+ℹ Running operations in parallel across 2 devices...
+
+======================================================================
+              DEVICE: lab-asav-1 (192.168.1.185)
+======================================================================
+  GigabitEthernet0/0 — Nameif: Inside → Inside
+
+======================================================================
+              DEVICE: lab-asav-2 (192.168.1.186)
+======================================================================
+  GigabitEthernet0/0 — Nameif: 100 → Inside
+
+======================================================================
+  SUMMARY: 2/2 devices succeeded
+======================================================================
+```
+
+### Files Modified
+- `configs/device.yaml` — Restructured as `devices:` list
+- `asa_manager/config/device_config.py` — Added `from_yaml_multi()`
+- `asa_manager/manager.py` — Added `device_configs` list
+- `asa_manager/__main__.py` — Parallel execution with `ThreadPoolExecutor`
+
+### Status
+✅ Both devices connected concurrently (same timestamp in logs)  
+✅ Output cleanly separated per device, no interleaving  
+✅ Summary shows success/failure count  
+✅ Single-device path has zero thread pool overhead  
+✅ Legacy single-device YAML format still supported  
+✅ No new dependencies
+
+## 2026-03-13 - Fix: Multi-Device Parallel Revert
+
+### Problem
+- `--revert` always connected to the first device in config (`lab-asav-1`), but saved state was from `lab-asav-2` → device name mismatch error
+- `StateManager` used a single `last_applied_changes.json` file — when parallel commits ran, the second device's state overwrote the first
+- No support for reverting multiple devices from a single `--revert` call
+
+### Changes Made
+
+#### 1. Per-Device State Files (`asa_manager/utils/state.py`)
+- Rewrote `StateManager` to store state per-device: `state/lab-asav-1.json`, `state/lab-asav-2.json`
+- Added `load_device_state(device_name)` — loads state for a specific device
+- Added `load_all_device_states()` — loads state for ALL devices with revertible changes
+- Added `clear_device_state(device_name)` — clears only one device's state after revert
+- Legacy `last_applied_changes.json` still read for backward compatibility
+
+#### 2. Updated `ASAManager.revert_last_changes()` (`asa_manager/manager.py`)
+- Now loads state for the specific connected device via `load_device_state()`
+- Clears only that device's state after successful revert (not all state)
+- Removed old device-name mismatch check (CLI handles matching now)
+
+#### 3. Multi-Device Revert in CLI (`asa_manager/__main__.py`)
+- Added `_run_revert_on_device()` thread-safe worker (same pattern as preview/commit)
+- Revert section loads all device states, matches each to a `DeviceConfig` by name
+- Runs revert in parallel via `ThreadPoolExecutor` when multiple devices need reverting
+- Single device → direct call, no thread pool overhead
+
+### Full Test Cycle (Preview → Commit → Revert → Verify)
+```
+Step 1 — Preview:   Both devices show Inside → TestRevert           ✅
+Step 2 — Commit:    Both devices applied TestRevert in parallel     ✅
+                    Per-device state: lab-asav-1.json, lab-asav-2.json
+Step 3 — Revert:    Both devices reverted TestRevert → Inside       ✅
+                    State files cleaned up after success
+Step 4 — Verify:    Both devices confirm current nameif = Inside    ✅
+```
+
+### Files Modified
+- `asa_manager/utils/state.py` — Per-device state files, backward-compat legacy reads
+- `asa_manager/manager.py` — Per-device state load/clear in revert
+- `asa_manager/__main__.py` — `_run_revert_on_device()` worker, parallel revert dispatch
+
+### Status
+✅ Parallel commit saves per-device state (no overwrites)
+✅ Parallel revert connects to each device independently
+✅ State files cleaned up after successful revert
+✅ Full cycle tested: preview → commit → revert → verify
+✅ Legacy single-file state format still supported

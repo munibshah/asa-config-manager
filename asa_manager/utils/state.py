@@ -11,7 +11,15 @@ logger = get_logger(__name__)
 
 
 class StateManager:
-    """Manages state persistence for revert functionality."""
+    """Manages state persistence for revert functionality.
+    
+    State is stored per-device so that parallel commits to multiple
+    devices never overwrite each other.  Each device gets its own
+    file: ``<state_dir>/<device_name>.json``.
+    
+    The legacy ``last_applied_changes.json`` single-file format is
+    still read (and migrated) for backward compatibility.
+    """
     
     def __init__(self, state_dir: str = "state"):
         """
@@ -22,10 +30,24 @@ class StateManager:
         """
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.state_file = self.state_dir / "last_applied_changes.json"
-    
-    def save_applied_changes(self, device_name: str, changes: List[Dict], 
-                           backup_path: Optional[str] = None) -> None:
+        # Legacy single-device file (kept for backward compat reads)
+        self._legacy_file = self.state_dir / "last_applied_changes.json"
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _device_state_file(self, device_name: str) -> Path:
+        """Return the per-device state file path."""
+        safe_name = device_name.replace("/", "_").replace("\\", "_")
+        return self.state_dir / f"{safe_name}.json"
+
+    # ------------------------------------------------------------------
+    # Write
+    # ------------------------------------------------------------------
+
+    def save_applied_changes(self, device_name: str, changes: List[Dict],
+                             backup_path: Optional[str] = None) -> None:
         """
         Save information about applied changes for revert capability.
         
@@ -41,11 +63,8 @@ class StateManager:
             "applied_changes": []
         }
         
-        # Store essential info for each change
         for change in changes:
             change_obj = change.get("change")
-            
-            # Serialize the InterfaceChange object properly
             change_data = {}
             if change_obj:
                 change_data = {
@@ -63,49 +82,128 @@ class StateManager:
             })
         
         try:
-            with open(self.state_file, 'w') as f:
+            state_file = self._device_state_file(device_name)
+            with open(state_file, 'w') as f:
                 json.dump(state, f, indent=2)
-            logger.info(f"Saved applied changes state to {self.state_file}")
+            logger.info(f"Saved applied changes state to {state_file}")
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
             raise
-    
-    def load_last_applied_changes(self) -> Optional[Dict[str, Any]]:
+
+    # ------------------------------------------------------------------
+    # Read
+    # ------------------------------------------------------------------
+
+    def load_device_state(self, device_name: str) -> Optional[Dict[str, Any]]:
         """
-        Load information about the last applied changes.
+        Load state for a specific device.
+        
+        Falls back to the legacy single-file format if the per-device
+        file does not exist but the legacy file references this device.
         
         Returns:
-            Dictionary with last applied changes info or None if no state exists
+            State dict or None
         """
-        try:
-            if not self.state_file.exists():
+        state_file = self._device_state_file(device_name)
+        if state_file.exists():
+            try:
+                with open(state_file, 'r') as f:
+                    state = json.load(f)
+                logger.info(f"Loaded state for device {device_name}")
+                return state
+            except Exception as e:
+                logger.error(f"Failed to load state for {device_name}: {e}")
                 return None
-            
-            with open(self.state_file, 'r') as f:
-                state = json.load(f)
-            
-            logger.info("Loaded last applied changes state")
-            return state
-            
-        except Exception as e:
-            logger.error(f"Failed to load state: {e}")
-            return None
-    
-    def clear_state(self) -> None:
-        """Clear the saved state after successful revert."""
-        try:
-            if self.state_file.exists():
-                self.state_file.unlink()
-                logger.info("Cleared applied changes state")
-        except Exception as e:
-            logger.error(f"Failed to clear state: {e}")
-    
-    def has_revertible_changes(self) -> bool:
+
+        # Fallback: legacy single file
+        return self._load_legacy_if_matches(device_name)
+
+    def load_all_device_states(self) -> List[Dict[str, Any]]:
         """
-        Check if there are revertible changes available.
+        Load state for ALL devices that have revertible changes.
         
         Returns:
-            True if there are changes that can be reverted
+            List of state dicts (one per device)
         """
-        state = self.load_last_applied_changes()
-        return state is not None and len(state.get("applied_changes", [])) > 0
+        states: List[Dict[str, Any]] = []
+        seen_devices: set = set()
+
+        # Per-device files
+        for f in sorted(self.state_dir.glob("*.json")):
+            if f.name == "last_applied_changes.json":
+                continue
+            try:
+                with open(f, 'r') as fh:
+                    state = json.load(fh)
+                device = state.get("device_name", f.stem)
+                if device not in seen_devices:
+                    seen_devices.add(device)
+                    states.append(state)
+            except Exception as e:
+                logger.warning(f"Skipping corrupt state file {f}: {e}")
+
+        # Legacy fallback
+        if not states and self._legacy_file.exists():
+            try:
+                with open(self._legacy_file, 'r') as fh:
+                    state = json.load(fh)
+                if state and state.get("applied_changes"):
+                    states.append(state)
+            except Exception:
+                pass
+
+        return states
+
+    def load_last_applied_changes(self) -> Optional[Dict[str, Any]]:
+        """Backward-compatible: return the first available state."""
+        states = self.load_all_device_states()
+        return states[0] if states else None
+
+    # ------------------------------------------------------------------
+    # Delete
+    # ------------------------------------------------------------------
+
+    def clear_device_state(self, device_name: str) -> None:
+        """Clear state for a specific device after successful revert."""
+        state_file = self._device_state_file(device_name)
+        try:
+            if state_file.exists():
+                state_file.unlink()
+                logger.info(f"Cleared state for device {device_name}")
+        except Exception as e:
+            logger.error(f"Failed to clear state for {device_name}: {e}")
+
+    def clear_state(self) -> None:
+        """Clear ALL state (legacy compat + per-device files)."""
+        for f in self.state_dir.glob("*.json"):
+            try:
+                f.unlink()
+                logger.info(f"Cleared state file {f}")
+            except Exception as e:
+                logger.error(f"Failed to clear state file {f}: {e}")
+
+    # ------------------------------------------------------------------
+    # Query
+    # ------------------------------------------------------------------
+
+    def has_revertible_changes(self) -> bool:
+        """Check if there are revertible changes for any device."""
+        return len(self.load_all_device_states()) > 0
+
+    # ------------------------------------------------------------------
+    # Private
+    # ------------------------------------------------------------------
+
+    def _load_legacy_if_matches(self, device_name: str) -> Optional[Dict[str, Any]]:
+        """Load legacy file only if it matches the requested device."""
+        if not self._legacy_file.exists():
+            return None
+        try:
+            with open(self._legacy_file, 'r') as f:
+                state = json.load(f)
+            if state.get("device_name") == device_name:
+                logger.info(f"Loaded legacy state for {device_name}")
+                return state
+        except Exception:
+            pass
+        return None

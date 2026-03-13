@@ -1,6 +1,6 @@
 """Device configuration model."""
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from .loader import ConfigLoader
 
 
@@ -36,13 +36,17 @@ class DeviceConfig:
         self.password = config['password']
         self.device_type = config.get('device_type', 'cisco_asa')
         self.port = config.get('port', 22)
-        self.secret = config.get('secret')
+        # Default secret to password if not explicitly provided
+        self.secret = config.get('secret', self.password)
         self.device_name = config.get('device_name', self.host)
     
     @classmethod
     def from_yaml(cls, config_path: str) -> 'DeviceConfig':
         """
-        Load device configuration from YAML file.
+        Load a single device configuration from YAML file.
+        
+        For multi-device files, returns only the first device.
+        Use from_yaml_multi() to load all devices.
         
         Args:
             config_path: Path to YAML configuration file
@@ -50,8 +54,37 @@ class DeviceConfig:
         Returns:
             DeviceConfig instance
         """
+        devices = cls.from_yaml_multi(config_path)
+        return devices[0]
+    
+    @classmethod
+    def from_yaml_multi(cls, config_path: str) -> List['DeviceConfig']:
+        """
+        Load one or more device configurations from YAML file.
+        
+        Supports two formats:
+          - Legacy flat format (single device with top-level keys)
+          - Multi-device format with a 'devices:' list
+        
+        Args:
+            config_path: Path to YAML configuration file
+            
+        Returns:
+            List of DeviceConfig instances
+        """
         config_dict = ConfigLoader.load(config_path)
-        return cls(config_dict)
+        
+        # Multi-device format: { devices: [ {host: ...}, ... ] }
+        if 'devices' in config_dict and isinstance(config_dict['devices'], list):
+            devices = []
+            for entry in config_dict['devices']:
+                devices.append(cls(entry))
+            if not devices:
+                raise ValueError(f"No devices defined in {config_path}")
+            return devices
+        
+        # Legacy single-device format: { host: ..., username: ... }
+        return [cls(config_dict)]
     
     def to_netmiko_dict(self) -> Dict[str, Any]:
         """

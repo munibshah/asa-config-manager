@@ -6,13 +6,240 @@ Run the package as a command-line tool:
 """
 
 import argparse
+import io
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from .config import DeviceConfig
 from .manager import ASAManager
 from .utils import get_logger, CLIFormatter, format_commit_operation, format_revert_operation, show_operation_result
 
 logger = get_logger(__name__)
+
+
+def _run_preview_on_device(device_config: DeviceConfig, changes_config_path: str,
+                           backup_dir: str, log_dir: str) -> dict:
+    """
+    Run preview operation on a single device. Thread-safe — each call
+    creates its own ASAManager with an independent connection.
+    All output is written to a StringIO buffer (never to sys.stdout).
+
+    Returns:
+        dict with 'device_name', 'host', 'success', 'output', and optional 'error'
+    """
+    buf = io.StringIO()
+    device_name = device_config.device_name or device_config.host
+    try:
+        manager = ASAManager(backup_dir=backup_dir, log_dir=log_dir)
+        manager.device_config = device_config
+        manager.device_configs = [device_config]
+
+        buf.write(f"Connecting to {device_config.host}...\n")
+        if not manager.connect():
+            buf.write("Failed to connect to device\n")
+            return {'device_name': device_name, 'host': device_config.host,
+                    'success': False, 'output': buf.getvalue(),
+                    'error': 'Connection failed'}
+
+        buf.write("Connected successfully!\n\n")
+        try:
+            manager.load_changes(changes_config_path)
+            buf.write(manager.preview_changes())
+            buf.write("\n")
+        finally:
+            manager.disconnect()
+
+        return {'device_name': device_name, 'host': device_config.host,
+                'success': True, 'output': buf.getvalue()}
+
+    except Exception as e:
+        logger.exception(f"Error on device {device_name}")
+        return {'device_name': device_name, 'host': device_config.host,
+                'success': False, 'output': buf.getvalue(),
+                'error': str(e)}
+
+
+def _run_commit_on_device(device_config: DeviceConfig, changes_config_path: str,
+                          backup_dir: str, log_dir: str,
+                          save_config: bool, no_backup: bool) -> dict:
+    """
+    Run commit operation on a single device. Thread-safe.
+    All output is written to a StringIO buffer (never to sys.stdout).
+
+    Returns:
+        dict with 'device_name', 'host', 'success', 'output', and optional 'error'
+    """
+    buf = io.StringIO()
+    device_name = device_config.device_name or device_config.host
+    try:
+        manager = ASAManager(backup_dir=backup_dir, log_dir=log_dir)
+        manager.device_config = device_config
+        manager.device_configs = [device_config]
+
+        buf.write(f"⚙ Connecting to {device_config.host}...")
+        if not manager.connect():
+            buf.write("\n✗ Failed to connect to device\n")
+            return {'device_name': device_name, 'host': device_config.host,
+                    'success': False, 'output': buf.getvalue(),
+                    'error': 'Connection failed'}
+        buf.write(" Done!\n")
+
+        try:
+            manager.load_changes(changes_config_path)
+
+            # Build commit preview text
+            staged = manager.interface_manager.staged_changes
+            buf.write("\nChanges to Apply\n")
+            buf.write("-" * 16 + "\n")
+            for change in staged:
+                change_obj = change.get('change', {})
+                current_config = change.get('current_config', {})
+                if hasattr(change_obj, 'nameif') and change_obj.nameif:
+                    current_nameif = current_config.get('nameif', 'none')
+                    buf.write(f"  {change['interface']}\n")
+                    buf.write(f"    nameif: {current_nameif} → {change_obj.nameif}\n")
+                if hasattr(change_obj, 'vlan') and change_obj.vlan:
+                    current_vlan = current_config.get('vlan', 'none')
+                    buf.write(f"  {change['interface']}\n")
+                    buf.write(f"    vlan: {current_vlan} → {change_obj.vlan}\n")
+            buf.write("\n")
+
+            buf.write("⚙ Creating configuration backup...")
+            result = manager.commit_changes(
+                save_config=save_config,
+                create_backup=not no_backup
+            )
+            buf.write(" Done!\n")
+            buf.write("⚙ Applying configuration changes... Done!\n")
+
+            if result['success']:
+                buf.write("✓ Changes applied successfully!\n")
+                if result.get('config_saved'):
+                    buf.write("✓ Configuration saved to startup-config\n")
+                elif save_config:
+                    buf.write("⚠ Failed to save configuration\n")
+            else:
+                buf.write(f"✗ Failed to apply changes: {result.get('message')}\n")
+
+            return {'device_name': device_name, 'host': device_config.host,
+                    'success': result['success'], 'output': buf.getvalue()}
+        finally:
+            manager.disconnect()
+
+    except Exception as e:
+        logger.exception(f"Error on device {device_name}")
+        return {'device_name': device_name, 'host': device_config.host,
+                'success': False, 'output': buf.getvalue(),
+                'error': str(e)}
+
+
+def _run_revert_on_device(device_config: DeviceConfig,
+                          backup_dir: str, log_dir: str) -> dict:
+    """
+    Run revert operation on a single device. Thread-safe.
+    All output is written to a StringIO buffer (never to sys.stdout).
+
+    Returns:
+        dict with 'device_name', 'host', 'success', 'output', and optional 'error'
+    """
+    buf = io.StringIO()
+    device_name = device_config.device_name or device_config.host
+    try:
+        manager = ASAManager(backup_dir=backup_dir, log_dir=log_dir)
+        manager.device_config = device_config
+        manager.device_configs = [device_config]
+
+        # Check if this device has revertible state
+        state = manager.state_manager.load_device_state(device_name)
+        if not state:
+            buf.write(f"No revertible changes found for {device_name}\n")
+            return {'device_name': device_name, 'host': device_config.host,
+                    'success': True, 'output': buf.getvalue(),
+                    'skipped': True}
+
+        buf.write(f"⚙ Connecting to {device_config.host}...")
+        if not manager.connect():
+            buf.write("\n✗ Failed to connect to device\n")
+            return {'device_name': device_name, 'host': device_config.host,
+                    'success': False, 'output': buf.getvalue(),
+                    'error': 'Connection failed'}
+        buf.write(" Done!\n\n")
+
+        try:
+            # Show what will be reverted
+            buf.write(f"ℹ Reverting changes applied at: {state.get('timestamp', 'Unknown')}\n")
+            if state.get('backup_path'):
+                buf.write(f"📁 Backup: {state['backup_path']}\n")
+            buf.write("\nChanges to Revert\n")
+            buf.write("-" * 17 + "\n")
+            for change in state.get('applied_changes', []):
+                interface = change['interface']
+                original_config = change.get('original_config', {})
+                change_data = change.get('change_data', {})
+                if change_data.get('nameif'):
+                    original_nameif = original_config.get('nameif', 'none')
+                    buf.write(f"  {interface}\n")
+                    buf.write(f"    nameif: {change_data['nameif']} → {original_nameif}\n")
+                if change_data.get('vlan'):
+                    original_vlan = original_config.get('vlan', 'none')
+                    buf.write(f"  {interface}\n")
+                    buf.write(f"    vlan: {change_data['vlan']} → {original_vlan}\n")
+            buf.write("\n")
+
+            buf.write("⚙ Reverting configuration changes...")
+            result = manager.revert_last_changes()
+            buf.write(" Done!\n")
+
+            if result['success']:
+                buf.write("✓ Changes reverted successfully!\n")
+                if result.get('backup_available'):
+                    buf.write(f"ℹ Original backup: {result['backup_available']}\n")
+            else:
+                buf.write(f"✗ {result.get('message', 'Revert failed')}\n")
+
+            return {'device_name': device_name, 'host': device_config.host,
+                    'success': result['success'], 'output': buf.getvalue()}
+        finally:
+            manager.disconnect()
+
+    except Exception as e:
+        logger.exception(f"Error reverting device {device_name}")
+        return {'device_name': device_name, 'host': device_config.host,
+                'success': False, 'output': buf.getvalue(),
+                'error': str(e)}
+
+
+def _print_device_results(results: list) -> int:
+    """
+    Print collected per-device results sequentially.
+
+    Returns:
+        0 if all succeeded, 1 if any failed
+    """
+    any_failed = False
+    for r in results:
+        CLIFormatter.header(f"DEVICE: {r['device_name']} ({r['host']})")
+        if r['output']:
+            print(r['output'])
+        if not r['success']:
+            any_failed = True
+            CLIFormatter.error(f"Operation failed on {r['device_name']}: {r.get('error', 'unknown error')}")
+        print()
+
+    # Summary
+    total = len(results)
+    succeeded = sum(1 for r in results if r['success'])
+    failed = total - succeeded
+    print("=" * 70)
+    print(f"  SUMMARY: {succeeded}/{total} devices succeeded", end="")
+    if failed:
+        print(f", {failed} failed")
+    else:
+        print()
+    print("=" * 70)
+
+    return 1 if any_failed else 0
 
 
 def main():
@@ -22,7 +249,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Preview changes
+  # Preview changes (all devices in parallel)
   python -m asa_manager -d configs/device.yaml -c configs/changes.yaml --preview
 
   # Apply changes with backup
@@ -106,7 +333,7 @@ Examples:
         parser.error("Must specify --preview, --commit, --list-backups, or --revert")
     
     try:
-        # Initialize manager
+        # Initialize manager (used for list-backups, revert, and loading configs)
         manager = ASAManager(
             device_config=args.device_config if Path(args.device_config).exists() else None,
             backup_dir=args.backup_dir,
@@ -126,57 +353,62 @@ Examples:
                 print("  No backups found")
             return 0
         
-        # Handle revert command
+        # Handle revert command — multi-device parallel revert
         if args.revert:
-            # Check if there are revertible changes before connecting
             if not manager.has_revertible_changes():
                 CLIFormatter.warning("No changes to revert. No changes have been applied recently.")
                 return 0
             
-            # Load device config if not already loaded
-            if not manager.device_config:
+            if not manager.device_configs:
                 if not Path(args.device_config).exists():
                     CLIFormatter.error(f"Device config file not found: {args.device_config}")
                     print("Please create it from the example:")
                     print(f"  cp configs/device_example.yaml {args.device_config}")
                     return 1
                 manager.load_device_config(args.device_config)
-            
-            # Connect to device with progress
-            CLIFormatter.progress_start(f"Connecting to {manager.device_config.host}")
-            if not manager.connect():
-                print()
-                CLIFormatter.error("Failed to connect to device")
-                return 1
-            CLIFormatter.progress_done()
-            
-            try:
-                # Show enhanced revert display
-                state = manager.state_manager.load_last_applied_changes()
-                format_revert_operation(state)
-                
-                CLIFormatter.progress_start("Reverting configuration changes")
-                CLIFormatter.spinner(0.5)
-                result = manager.revert_last_changes()
-                CLIFormatter.progress_done()
-                
-                show_operation_result(result['success'], 
-                                    "Changes reverted successfully!" if result['success'] else f"Failed to revert changes: {result.get('message')}", 
-                                    result.get('results'))
-                
-                if result['success']:
-                    CLIFormatter.info(f"Reverted changes originally applied at: {result.get('reverted_at')}")
-                    if result.get('backup_available'):
-                        CLIFormatter.info(f"Original backup available at: {result.get('backup_available')}")
-                    return 0
-                else:
-                    return 1
-            
-            finally:
-                manager.disconnect()
 
-        # Load device config if not already loaded
-        if not manager.device_config:
+            # Build a lookup: device_name -> DeviceConfig
+            dc_lookup = {dc.device_name: dc for dc in manager.device_configs}
+
+            # Find which devices have revertible state
+            states = manager.state_manager.load_all_device_states()
+            revert_configs = []
+            for state in states:
+                dname = state.get('device_name')
+                if dname in dc_lookup:
+                    revert_configs.append(dc_lookup[dname])
+                else:
+                    CLIFormatter.warning(
+                        f"State exists for '{dname}' but no matching device in config — skipping")
+
+            if not revert_configs:
+                CLIFormatter.warning("No matching devices found for revert.")
+                return 0
+
+            num = len(revert_configs)
+            CLIFormatter.info(f"Reverting changes on {num} device(s)...")
+            print()
+
+            if num == 1:
+                r = _run_revert_on_device(revert_configs[0],
+                                          args.backup_dir, args.log_dir)
+                return _print_device_results([r])
+
+            results = []
+            with ThreadPoolExecutor(max_workers=num) as executor:
+                futs = {executor.submit(_run_revert_on_device, dc,
+                                        args.backup_dir, args.log_dir): dc
+                        for dc in revert_configs}
+                for future in as_completed(futs):
+                    results.append(future.result())
+
+            results.sort(key=lambda r: r['device_name'])
+            return _print_device_results(results)
+
+        # ----- Preview / Commit: multi-device parallel execution -----
+
+        # Load device configs
+        if not manager.device_configs:
             if not Path(args.device_config).exists():
                 print(f"Error: Device config file not found: {args.device_config}")
                 print("Please create it from the example:")
@@ -184,63 +416,55 @@ Examples:
                 return 1
             manager.load_device_config(args.device_config)
         
-        # Verify changes config exists (only for preview/commit operations)
-        if not args.revert and not Path(args.changes_config).exists():
+        # Verify changes config exists
+        if not Path(args.changes_config).exists():
             print(f"Error: Changes config file not found: {args.changes_config}")
             print("Please create it from the example:")
             print(f"  cp configs/changes_example.yaml {args.changes_config}")
             return 1
         
-        # Connect to device
-        print(f"Connecting to {manager.device_config.host}...")
-        if not manager.connect():
-            print("Failed to connect to device")
-            return 1
-        print("Connected successfully!\n")
-        
-        try:
-            # Load changes
-            manager.load_changes(args.changes_config)
-            
-            # Preview changes
+        device_configs = manager.device_configs
+        num_devices = len(device_configs)
+
+        CLIFormatter.info(f"Found {num_devices} device(s) in configuration")
+
+        # Single device — run directly (no thread pool overhead)
+        if num_devices == 1:
+            dc = device_configs[0]
             if args.preview:
-                print(manager.preview_changes())
-            
-            # Commit changes
-            if args.commit:
-                # Show enhanced commit display
-                format_commit_operation(manager.interface_manager.staged_changes)
-                
-                CLIFormatter.progress_start("Creating configuration backup")
-                CLIFormatter.spinner(0.3)
-                
-                result = manager.commit_changes(
-                    save_config=args.save,
-                    create_backup=not args.no_backup
-                )
-                
-                CLIFormatter.progress_done()
-                CLIFormatter.progress_start("Applying configuration changes")
-                CLIFormatter.spinner(0.5)
-                CLIFormatter.progress_done()
-                
-                show_operation_result(result['success'], 
-                                    "Changes applied successfully!" if result['success'] else f"Failed to apply changes: {result.get('message')}", 
-                                    result.get('results'))
-                
-                if result['success']:
-                    if result.get('config_saved'):
-                        CLIFormatter.success("Configuration saved to startup-config")
-                    elif args.save:
-                        CLIFormatter.warning("Failed to save configuration")
-                    return 0
+                r = _run_preview_on_device(dc, args.changes_config,
+                                           args.backup_dir, args.log_dir)
+            else:
+                r = _run_commit_on_device(dc, args.changes_config,
+                                          args.backup_dir, args.log_dir,
+                                          args.save, args.no_backup)
+            return _print_device_results([r])
+
+        # Multiple devices — run in parallel
+        CLIFormatter.info(f"Running operations in parallel across {num_devices} devices...")
+        print()
+
+        results = []
+        with ThreadPoolExecutor(max_workers=num_devices) as executor:
+            future_to_device = {}
+            for dc in device_configs:
+                if args.preview:
+                    fut = executor.submit(
+                        _run_preview_on_device, dc, args.changes_config,
+                        args.backup_dir, args.log_dir)
                 else:
-                    return 1
-        
-        finally:
-            manager.disconnect()
-        
-        return 0
+                    fut = executor.submit(
+                        _run_commit_on_device, dc, args.changes_config,
+                        args.backup_dir, args.log_dir,
+                        args.save, args.no_backup)
+                future_to_device[fut] = dc
+
+            for future in as_completed(future_to_device):
+                results.append(future.result())
+
+        # Sort results by device name for consistent output order
+        results.sort(key=lambda r: r['device_name'])
+        return _print_device_results(results)
     
     except FileNotFoundError as e:
         print(f"Error: {e}")

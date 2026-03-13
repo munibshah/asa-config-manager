@@ -1,6 +1,6 @@
 """Main ASA Manager module."""
 
-from typing import Optional
+from typing import Optional, List
 from pathlib import Path
 
 from .config import DeviceConfig, ChangeConfig
@@ -37,6 +37,7 @@ class ASAManager:
         
         # Initialize components
         self.device_config: Optional[DeviceConfig] = None
+        self.device_configs: List[DeviceConfig] = []
         self.connection: Optional[ASAConnection] = None
         self.interface_manager: Optional[InterfaceManager] = None
         self.backup_manager = BackupManager(backup_dir)
@@ -51,14 +52,18 @@ class ASAManager:
     
     def load_device_config(self, config_path: str):
         """
-        Load device configuration from YAML file.
+        Load device configuration(s) from YAML file.
         
         Args:
             config_path: Path to device YAML configuration
         """
         logger.info(f"Loading device config from {config_path}")
-        self.device_config = DeviceConfig.from_yaml(config_path)
-        logger.info(f"Device config loaded for {self.device_config.host}")
+        self.device_configs = DeviceConfig.from_yaml_multi(config_path)
+        # Set the first device as the active device for backward compat
+        self.device_config = self.device_configs[0]
+        logger.info(f"Loaded {len(self.device_configs)} device(s)")
+        for dc in self.device_configs:
+            logger.info(f"  Device: {dc.device_name} ({dc.host})")
     
     def load_changes(self, config_path: str):
         """
@@ -204,22 +209,15 @@ class ASAManager:
         if not self.connection:
             raise ValueError("Not connected to device. Call connect() first.")
         
-        # Load last applied changes from state
-        state = self.state_manager.load_last_applied_changes()
+        # Load state for THIS specific device
+        state = self.state_manager.load_device_state(self.device_config.device_name)
         if not state:
             return {
                 'success': False,
-                'message': 'No revertible changes found. No changes have been applied recently.'
+                'message': f'No revertible changes found for device {self.device_config.device_name}.'
             }
         
-        # Verify we're connected to the same device
-        if state.get('device_name') != self.device_config.device_name:
-            return {
-                'success': False,
-                'message': f"Cannot revert: changes were applied to {state.get('device_name')}, but currently connected to {self.device_config.device_name}"
-            }
-        
-        logger.info("Reverting last applied changes...")
+        logger.info(f"Reverting changes on {self.device_config.device_name}...")
         
         results = []
         all_success = True
@@ -249,10 +247,10 @@ class ASAManager:
                 })
                 logger.error(f"Failed to revert changes to {interface}: {e}")
         
-        # Clear state if revert was successful
+        # Clear state for THIS device only if revert was successful
         if all_success:
-            self.state_manager.clear_state()
-            logger.info("Cleared revert state after successful revert")
+            self.state_manager.clear_device_state(self.device_config.device_name)
+            logger.info(f"Cleared revert state for {self.device_config.device_name}")
         
         return {
             'success': all_success,
