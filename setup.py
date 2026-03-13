@@ -3,8 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="asa-config-manager",
     version="0.1.0",
-    package_dir={"": "src"},
-    packages=find_packages(where="src"),
+    packages=find_packages(),
     install_requires=[
         "netmiko>=4.3.0",
         "paramiko>=3.4.0",

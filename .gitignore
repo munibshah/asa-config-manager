@@ -44,6 +44,10 @@ venv.bak/
 /backups/*
 !/backups/.gitkeep
 
+# Internal docs - not for GitHub
+.github/
+copilot-docs/
+
 # Configuration files (contain sensitive data)
 configs/device.yaml
 configs/changes.yaml

@@ -5,9 +5,6 @@ from unittest.mock import Mock, patch, MagicMock
 import sys
 from pathlib import Path
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
-
 from asa_manager import ASAManager
 from asa_manager.config import DeviceConfig, ChangeConfig, InterfaceChange
 from asa_manager.connection import ASAConnection

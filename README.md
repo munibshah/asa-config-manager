@@ -138,16 +138,20 @@ The CLI now features enhanced visual feedback:
 
 ## Project Structure
 
-- `src/asa_manager/` - Main package
+- `asa_manager/` - Main package
   - `connection/` - SSH connection handling
   - `config/` - Configuration parsing
   - `operations/` - VLAN and nameif operations
   - `validators/` - Configuration validation
-  - `utils/` - Logging, backups, helpers
+  - `utils/` - Logging, backups, console formatting, state management
 - `configs/` - YAML configuration files
 - `backups/` - Automatic config backups
 - `logs/` - Application logs
+- `state/` - Revert state persistence (per-device)
 - `tests/` - Unit tests
+- `examples/` - Example usage scripts
+- `docs/` - Additional documentation
+- `tasks/` - Development task tracking
 
 ## Documentation
 

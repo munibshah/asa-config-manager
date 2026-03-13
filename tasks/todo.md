@@ -1,43 +1,93 @@
-# TODO: Multi-Device Parallel Execution
+# TODO: Repository Reorganization
+
+## Problem
+The repository has a messy structure with:
+- **Root-level duplicate files**: `__init__.py`, `__main__.py`, `manager.py`, `asa_connection.py`, `change_config.py`, `device_config.py`, `loader.py` — all are STALE copies of newer code inside `asa_manager/`
+- **Root-level duplicate directories**: `config/`, `connection/`, `operations/`, `utils/`, `validators/` — all are STALE copies of `asa_manager/` subdirectories (missing `console.py`, `state.py`, updated code)
+- **Loose config examples**: `changes_example.yaml`, `device_example.yaml` at root (already in `configs/`)
+- **Loose test/debug scripts**: `test_credentials.py`, `test_ssh.py` at root (should be in `tests/`)
+- **`setup.py` references `src/`** directory which doesn't exist — package is at `asa_manager/` not `src/asa_manager/`
+- **`.gitignore` missing**: `.github/` and `copilot-docs/` exclusions
+- **`example.py`** at root — should be in `examples/`
+- **Root `.gitkeep`** — unnecessary at root level
+- **`PROJECT_REVIEW.md`** — move to `docs/`
 
 ## Plan
-The CLI currently processes only one device (the last one parsed, due to YAML duplicate keys).
-We need to:
-1. Fix YAML structure (already done — `devices:` list)
-2. Fix `DeviceConfig` multi-load (already done — `from_yaml_multi()`)
-3. Fix `ASAManager` to store device list (already done — `device_configs`)
-4. **Add a `run_on_device()` helper** in `__main__.py` that runs an operation on a single device
-5. **Add parallel dispatch** in `__main__.py` using `concurrent.futures.ThreadPoolExecutor`
-6. **Aggregate and display results** per-device with clear labeling
-7. Update `CHANGE.md`
 
-## Architecture Decision
-- Use `concurrent.futures.ThreadPoolExecutor` (stdlib, no new deps)
-- Each thread gets its **own `ASAManager` instance** → no shared mutable state, fully thread-safe
-- `max_workers` = number of devices (bounded by device count, not unbounded)
-- Single device = no thread pool overhead (direct call)
-- Print output is collected per-device and printed sequentially to avoid interleaving
+### Phase 1: Update .gitignore
+- [x] Add `.github/` and `copilot-docs/` to `.gitignore` so they are NOT pushed to GitHub
 
-## Open Items
-- [x] Restructure `device.yaml` as `devices:` list
-- [x] Add `DeviceConfig.from_yaml_multi()`
-- [x] Update `ASAManager.load_device_config()` to populate `device_configs`
-- [x] Extract `_run_preview_on_device()` / `_run_commit_on_device()` helpers in `__main__.py`
-- [x] Add `ThreadPoolExecutor` parallel dispatch in `__main__.py`
-- [x] Collect output per-device into StringIO buffers, print sequentially
-- [x] Handle partial failures (one device fails, others succeed)
-- [x] Fix output interleaving — replace `redirect_stdout` with `buf.write()`
-- [x] Fix state file: store per-device state so parallel commits don't overwrite each other
-- [x] Fix revert: match saved state device_name to the right DeviceConfig, connect to that device
-- [x] Fix revert: support reverting multiple devices from a single `--revert` call
-- [x] Test: change nameif to "TestRevert", commit, verify, revert, verify
+### Phase 2: Remove root-level stale duplicate files
+- [x] Remove `__init__.py` (root) — stale copy of `asa_manager/__init__.py`
+- [x] Remove `__main__.py` (root) — stale copy of `asa_manager/__main__.py`
+- [x] Remove `manager.py` (root) — stale copy of `asa_manager/manager.py`
+- [x] Remove `asa_connection.py` (root) — stale copy of `asa_manager/connection/asa_connection.py`
+- [x] Remove `change_config.py` (root) — stale copy of `asa_manager/config/change_config.py`
+- [x] Remove `device_config.py` (root) — stale copy of `asa_manager/config/device_config.py`
+- [x] Remove `loader.py` (root) — stale copy of `asa_manager/config/loader.py`
 
-## Review
-- Both devices (192.168.1.185 and 192.168.1.186) connected concurrently at the same timestamp
-- Output cleanly separated per device with headers and summary
-- No new dependencies added (stdlib `concurrent.futures` only)
-- Single-device path skips thread pool overhead entirely
-- Legacy single-device YAML format still supported via `from_yaml_multi()` fallback
-- Per-device state files (`state/lab-asav-1.json`, `state/lab-asav-2.json`) — no overwriting
-- Full cycle tested: preview → commit (Inside→TestRevert) → revert (TestRevert→Inside) → verify (Inside) ✅
-- State files properly cleaned up after successful revert ✅
+### Phase 3: Remove root-level stale duplicate directories
+- [x] Remove `config/` (root) — stale copy of `asa_manager/config/`
+- [x] Remove `connection/` (root) — stale copy of `asa_manager/connection/`
+- [x] Remove `operations/` (root) — stale copy of `asa_manager/operations/`
+- [x] Remove `utils/` (root) — stale copy of `asa_manager/utils/`
+- [x] Remove `validators/` (root) — stale copy of `asa_manager/validators/`
+
+### Phase 4: Move loose files to proper locations
+- [x] Move `changes_example.yaml` (root) — already in `configs/`, remove root copy
+- [x] Move `device_example.yaml` (root) — already in `configs/`, remove root copy
+- [x] Move `test_credentials.py` → `tests/test_credentials.py`
+- [x] Move `test_ssh.py` → `tests/test_ssh.py`
+- [x] Move `example.py` → `examples/example.py`
+- [x] Move `PROJECT_REVIEW.md` → `docs/PROJECT_REVIEW.md`
+- [x] Remove root `.gitkeep` (unnecessary at root)
+
+### Phase 5: Fix setup.py
+- [x] Change `package_dir={"": "src"}` → `package_dir={"": "."}` (package is at `asa_manager/`, not `src/asa_manager/`)
+- [x] Change `packages=find_packages(where="src")` → `packages=find_packages(where=".")`
+
+### Phase 6: Clean up __pycache__
+- [x] Remove all `__pycache__` directories
+
+### Phase 7: Verification
+- [x] Run `python -m asa_manager --help` to verify CLI still works
+- [x] Run tests if available
+- [x] Verify `.github/` and `copilot-docs/` are gitignored
+
+### Phase 8: Commit & Document
+- [x] Update `CHANGE.md`
+- [x] Git commit with descriptive message
+- [x] Verify commit
+
+## Expected Final Structure
+```
+asa-config-manager/
+├── .env.example
+├── .gitignore
+├── CHANGE.md
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── LICENSE
+├── QUICKSTART.md
+├── README.md
+├── requirements.txt
+├── setup.py
+├── asa_manager/           # Main package (THE source of truth)
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── manager.py
+│   ├── config/
+│   ├── connection/
+│   ├── operations/
+│   ├── utils/
+│   └── validators/
+├── configs/               # YAML config files + examples
+├── backups/               # Config backups
+├── logs/                  # App logs
+├── state/                 # Revert state persistence
+├── tests/                 # All tests
+├── examples/              # Example scripts
+├── docs/                  # Additional docs
+├── tasks/                 # Task tracking
+├── .github/               # (gitignored — not pushed)
+└── copilot-docs/          # (gitignored — not pushed)

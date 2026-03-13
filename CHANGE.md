@@ -378,3 +378,60 @@ Step 4 — Verify:    Both devices confirm current nameif = Inside    ✅
 ✅ State files cleaned up after successful revert
 ✅ Full cycle tested: preview → commit → revert → verify
 ✅ Legacy single-file state format still supported
+
+## 2026-03-13 - Repository Reorganization & Cleanup
+
+### Problem
+- Root-level directory was cluttered with **stale duplicate files** (`__init__.py`, `__main__.py`, `manager.py`, `asa_connection.py`, `change_config.py`, `device_config.py`, `loader.py`) that were older copies of the real code in `asa_manager/`
+- Root-level **duplicate directories** (`config/`, `connection/`, `operations/`, `utils/`, `validators/`) mirrored `asa_manager/` subpackages but were outdated
+- Loose config examples (`changes_example.yaml`, `device_example.yaml`) duplicated files already in `configs/`
+- Loose test scripts (`test_credentials.py`, `test_ssh.py`) at root instead of `tests/`
+- `example.py` and `PROJECT_REVIEW.md` at root with no proper home
+- `setup.py` referenced non-existent `src/` directory
+- `.github/` and `copilot-docs/` were tracked in git (internal docs, not for GitHub)
+- `InterfaceChange` class not exported from `asa_manager.config` — tests failed on import
+- Test file had stale `sys.path.insert` for non-existent `src/` directory
+
+### Changes Made
+
+#### Removed (stale duplicates)
+- Root-level Python files: `__init__.py`, `__main__.py`, `manager.py`, `asa_connection.py`, `change_config.py`, `device_config.py`, `loader.py`
+- Root-level directories: `config/`, `connection/`, `operations/`, `utils/`, `validators/`
+- Root-level config examples: `changes_example.yaml`, `device_example.yaml`
+- Root-level `.gitkeep` (unnecessary)
+
+#### Moved to proper locations
+- `example.py` → `examples/example.py`
+- `PROJECT_REVIEW.md` → `docs/PROJECT_REVIEW.md`
+- `test_credentials.py` → `tests/test_credentials.py`
+- `test_ssh.py` → `tests/test_ssh.py`
+
+#### Fixed
+- `setup.py`: Removed `package_dir={"": "src"}` and `find_packages(where="src")` → `find_packages()` (package is at root, not under `src/`)
+- `asa_manager/config/__init__.py`: Added `InterfaceChange` to exports
+- `tests/test_asa_manager.py`: Removed stale `sys.path.insert(0, ... / 'src')` line
+- `.gitignore`: Added `.github/` and `copilot-docs/` to prevent internal docs from being pushed to GitHub
+- Untracked `.github/` and `copilot-docs/` from git index via `git rm --cached`
+
+#### Cleaned
+- All `__pycache__/` directories removed
+
+### Verification
+✅ All 17 unit tests pass  
+✅ CLI `--help` works correctly  
+✅ CLI `--preview` connects to both devices in parallel, shows changes, returns 2/2 succeeded  
+✅ `.github/` and `copilot-docs/` confirmed gitignored (`git check-ignore` returns both)  
+✅ `setup.py` finds packages correctly at root level  
+
+### Final Repository Structure
+```
+asa_manager/          # Main package (connection, config, operations, utils, validators)
+configs/              # YAML config files + examples
+backups/              # Automatic config backups
+logs/                 # Application logs
+state/                # Per-device revert state persistence
+tests/                # Unit tests
+examples/             # Example usage scripts
+docs/                 # Additional documentation
+tasks/                # Development task tracking
+```
